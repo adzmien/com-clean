@@ -1,0 +1,84 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.clean'
+version = '0.0.1-SNAPSHOT'
+
+ext {
+    lombokVersion = '1.18.36'
+    mapstructVersion = '1.6.3'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+    withSourcesJar()
+    withJavadocJar()
+}
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.boot:spring-boot-dependencies:3.5.10"
+    }
+}
+
+dependencies {
+    // --- Exported (api) dependencies ---
+    api 'org.mapstruct:mapstruct:' + mapstructVersion
+    api 'com.fasterxml.jackson.core:jackson-annotations'
+    api 'jakarta.validation:jakarta.validation-api'
+    api 'org.springframework.data:spring-data-commons'
+    api 'org.springframework.data:spring-data-jpa'
+    api 'org.springframework:spring-web'
+    api 'jakarta.persistence:jakarta.persistence-api'
+
+    // --- Compile-only (consumer provides at runtime) ---
+    compileOnly 'org.hibernate.orm:hibernate-core'
+    compileOnly 'org.springframework.boot:spring-boot-autoconfigure'
+
+    // --- Lombok ---
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+    // --- MapStruct annotation processor (Lombok must come first) ---
+    annotationProcessor "org.mapstruct:mapstruct-processor:${mapstructVersion}"
+    annotationProcessor 'org.springframework:spring-context'
+
+    // --- Test ---
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
+    testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += [
+        '-Amapstruct.defaultComponentModel=spring',
+        '-Amapstruct.verbose=true'
+    ]
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        mavenLocal()
+    }
+}
