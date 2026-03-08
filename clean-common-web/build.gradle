@@ -1,0 +1,97 @@
+// =============================================================================
+// Clean Common Web — build.gradle
+// Tech Stack: Java 21 | Spring Boot BOM 3.5.10 | Gradle 8.8 (Groovy DSL)
+// java-library plugin — NOT a Spring Boot application
+// =============================================================================
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.clean'
+version = '0.0.1-SNAPSHOT'
+description = 'Clean Common Web — HTTP envelope DTOs and base controllers'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+    withJavadocJar()
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+dependencyManagement {
+    imports {
+        mavenBom 'org.springframework.boot:spring-boot-dependencies:3.5.10'
+    }
+}
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+}
+
+ext {
+    lombokVersion = '1.18.36'
+}
+
+dependencies {
+    // JPA contracts + pagination DTOs (ReadService, CrudService, PageDTO, PageQueryDTO, QueryMode, etc.)
+    api 'com.clean:clean-common-jpa:0.0.1-SNAPSHOT'
+
+    // Jackson annotations (@JsonInclude) — exported transitively to consumers
+    api 'com.fasterxml.jackson.core:jackson-annotations'
+
+    // Spring WebMVC (ResponseEntity, @GetMapping, etc.) — compileOnly; consuming app provides via spring-boot-starter-web
+    compileOnly 'org.springframework:spring-webmvc'
+
+    // Jakarta Validation (@Valid) — compileOnly; consuming app provides at runtime
+    compileOnly 'jakarta.validation:jakarta.validation-api'
+
+    // Jakarta Persistence (EntityNotFoundException in BaseReadController) — compileOnly
+    compileOnly 'jakarta.persistence:jakarta.persistence-api'
+
+    // Lombok
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+    // Testing
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
+    testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+tasks.named('javadoc') {
+    options {
+        addStringOption('Xdoclint:none', '-quiet')
+    }
+    failOnError = false
+}
+
+tasks.withType(GenerateModuleMetadata).configureEach {
+    suppressedValidationErrors.add('dependencies-without-versions')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        mavenLocal()
+    }
+}
