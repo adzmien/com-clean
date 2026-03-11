@@ -1,0 +1,101 @@
+// =============================================================================
+// Clean Common Proxy — build.gradle
+// Tech Stack: Java 21 | Spring Boot BOM 3.5.10 | Gradle 8.8 (Groovy DSL)
+// java-library plugin — NOT a Spring Boot application
+//
+// Provides reusable transport abstraction (REST, SOAP, Mock) for all API modules.
+// Consuming modules add: implementation 'com.clean:clean-common-proxy:0.0.1-SNAPSHOT'
+// =============================================================================
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.clean'
+version = '0.0.1-SNAPSHOT'
+description = 'Clean Common Proxy — reusable transport abstraction for REST, SOAP, and Mock'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+    withJavadocJar()
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+// Import Spring Boot BOM for version management (do NOT apply the boot plugin — this is a library)
+dependencyManagement {
+    imports {
+        mavenBom 'org.springframework.boot:spring-boot-dependencies:3.5.10'
+    }
+}
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+}
+
+ext {
+    lombokVersion = '1.18.36'
+}
+
+dependencies {
+    // WebFlux + Reactor Netty — api so consuming modules can use WebClient types if needed
+    api 'org.springframework:spring-webflux'
+    api 'io.projectreactor.netty:reactor-netty-http'
+
+    // Jackson for BaseProxy json() / fromJson() helpers — compileOnly; consuming app provides at runtime
+    compileOnly 'com.fasterxml.jackson.core:jackson-databind'
+    compileOnly 'com.fasterxml.jackson.core:jackson-core'
+
+    // SLF4J API — compileOnly; consuming app provides the implementation at runtime
+    compileOnly 'org.slf4j:slf4j-api'
+
+    // Spring Boot Autoconfigure (@AutoConfiguration, @ConditionalOn*) — compileOnly; consuming app provides at runtime
+    compileOnly 'org.springframework.boot:spring-boot-autoconfigure'
+
+    // Lombok
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+
+    // ---- Annotation Processors ----
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor 'org.springframework:spring-context'
+
+    // Testing
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webflux'
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
+    testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+tasks.named('javadoc') {
+    options {
+        addStringOption('Xdoclint:none', '-quiet')
+    }
+    failOnError = false
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        mavenLocal()
+    }
+}
