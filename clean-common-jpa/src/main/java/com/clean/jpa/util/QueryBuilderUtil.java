@@ -5,9 +5,6 @@ import java.util.Set;
 
 import org.springframework.http.HttpStatus;
 
-import com.clean.jpa.base.dto.ProjectedRequestDTO;
-import com.clean.jpa.base.query.QueryBuilder;
-import com.clean.jpa.constant.QueryMode;
 import com.clean.jpa.exception.ColumnValidationException;
 
 public final class QueryBuilderUtil {
@@ -25,17 +22,5 @@ public final class QueryBuilderUtil {
         if (!disallowed.isEmpty())
             throw new ColumnValidationException(
                     "Requested columns are not permitted: " + disallowed, HttpStatus.FORBIDDEN);
-    }
-
-    /**
-     * Applies SEARCH (LIKE) or FILTER (exact equality) mode based on {@code request.mode}.
-     * {@link QueryMode#SEARCH} activates LIKE; {@code null} or {@link QueryMode#FILTER} uses exact equality.
-     */
-    public static <E, D, F> QueryBuilder<E, D> resolveQueryMode(
-            QueryBuilder<E, D> qb,
-            ProjectedRequestDTO<F> request) {
-        return request.getMode() == QueryMode.SEARCH
-                ? qb.search(request.getPayload())
-                : qb.filter(request.getPayload());
     }
 }
