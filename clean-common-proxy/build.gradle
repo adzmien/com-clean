@@ -82,6 +82,12 @@ tasks.named('test') {
     useJUnitPlatform()
 }
 
+// Spring Boot BOM manages versions at resolution time but does not embed them in Gradle Module Metadata.
+// Suppress the 'dependencies-without-versions' validation so publishToMavenLocal succeeds.
+tasks.withType(GenerateModuleMetadata).configureEach {
+    suppressedValidationErrors.add('dependencies-without-versions')
+}
+
 tasks.named('javadoc') {
     options {
         addStringOption('Xdoclint:none', '-quiet')
