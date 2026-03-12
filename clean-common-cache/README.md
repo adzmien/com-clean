@@ -98,6 +98,11 @@ clean.cache.infinispan.server-list=127.0.0.1:11222
 clean.cache.infinispan.username=infinispan
 clean.cache.infinispan.password=secret
 
+# Redis
+clean.cache.redis.default-ttl-seconds=3600
+clean.cache.redis.cache-configs.config-cache.ttl-seconds=1800
+clean.cache.redis.cache-configs.user-cache.ttl-seconds=600
+
 # Hazelcast
 clean.cache.hazelcast.cluster-name=dev
 clean.cache.hazelcast.server-addresses=127.0.0.1:5701
@@ -105,7 +110,96 @@ clean.cache.hazelcast.server-addresses=127.0.0.1:5701
 
 ---
 
-### 2. GenericCacheStore — Write & Read
+### 2. Provider Details
+
+#### Infinispan (default)
+
+Infinispan is the default provider (`clean.cache.provider=infinispan` or when the property is omitted).
+
+**How it works:**
+
+- `CleanCacheAutoConfiguration` creates a `RemoteCacheManager` using the Hot Rod client library.
+- The connection is **lazy** — `RemoteCacheManager` is constructed with `started=false`, so no network connection is attempted at startup. The first `getCache(name)` call triggers the actual Hot Rod handshake.
+- `InfinispanSpringCacheManager` wraps `RemoteCacheManager` and adapts it to Spring's `CacheManager` interface.
+- Each cache name resolves to an `InfinispanSpringCache`, which wraps a `RemoteCache<Object, Object>`.
+- Values stored via `GenericCacheStore` are **JSON strings** — serialized by Jackson before being handed to `RemoteCache.put()`.
+- Caches must be **pre-created on the Infinispan server** (e.g., via a K8s Job or Infinispan console). If a cache name does not exist on the server, `getCache()` throws `IllegalStateException` with a descriptive message.
+- Authentication is optional — credentials are only applied when both `username` and `password` are non-blank.
+
+**Infinispan-specific properties:**
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `clean.cache.infinispan.server-list` | `127.0.0.1:11222` | Hot Rod endpoint(s), comma-separated |
+| `clean.cache.infinispan.username` | `infinispan` | Hot Rod auth username (omit or leave blank to skip auth) |
+| `clean.cache.infinispan.password` | _(none)_ | Hot Rod auth password |
+
+**Example:**
+
+```properties
+clean.cache.provider=infinispan
+clean.cache.cache-names=config-cache,user-cache
+clean.cache.infinispan.server-list=infinispan-svc:11222
+clean.cache.infinispan.username=appuser
+clean.cache.infinispan.password=s3cret
+```
+
+> **Infrastructure prerequisite:** The named caches (`config-cache`, `user-cache`) must exist on the Infinispan server before the application starts. They are not auto-created by the library.
+
+---
+
+#### Redis
+
+Redis uses **Spring Data Redis** under the hood — the library configures `RedisCacheManager` on top of the auto-detected `RedisConnectionFactory`.
+
+**How it works:**
+
+- Spring Boot auto-configures a `RedisConnectionFactory` from `spring.redis.*` (or `spring.data.redis.*`) properties. The library does not manage the connection factory itself.
+- `CleanCacheAutoConfiguration` builds a `RedisCacheManager` using the connection factory and the TTL settings from `CacheProviderProperties.Redis`.
+- Both keys and values are serialized as **plain strings** (`StringRedisSerializer`) — consistent with the JSON-string model used by `GenericCacheStore`.
+- A **default TTL** applies to all caches; individual caches can override the TTL via `cache-configs`.
+- Null values are rejected (`disableCachingNullValues()`).
+- If `clean.cache.cache-names` is set, those caches are pre-registered in the manager at startup.
+
+**Redis-specific properties:**
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `clean.cache.redis.default-ttl-seconds` | `3600` | Default TTL for all caches (seconds) |
+| `clean.cache.redis.cache-configs.<name>.ttl-seconds` | _(uses default)_ | Per-cache TTL override |
+
+**Spring Data Redis connection** (managed by Spring Boot, not this library):
+
+```properties
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+spring.data.redis.password=secret       # optional
+spring.data.redis.ssl.enabled=false     # optional
+```
+
+**Example:**
+
+```properties
+clean.cache.provider=redis
+clean.cache.cache-names=config-cache,user-cache
+
+# Global TTL fallback
+clean.cache.redis.default-ttl-seconds=3600
+
+# Per-cache overrides
+clean.cache.redis.cache-configs.config-cache.ttl-seconds=1800
+clean.cache.redis.cache-configs.user-cache.ttl-seconds=300
+
+# Spring Boot Redis connection
+spring.data.redis.host=redis-svc
+spring.data.redis.port=6379
+```
+
+> **Infrastructure prerequisite:** A running Redis instance is required. Spring Boot will fail to start if the `RedisConnectionFactory` cannot be created (e.g., missing `spring-boot-starter-data-redis` dependency).
+
+---
+
+### 3. GenericCacheStore — Write & Read
 
 Inject `GenericCacheStore` when a component needs full read/write/eviction access:
 
@@ -140,7 +234,7 @@ public class ConfigCacheStore {
 
 ---
 
-### 3. CacheReader — Read-Only Access
+### 4. CacheReader — Read-Only Access
 
 Inject `CacheReader` when a component only needs to read — enforces ISP:
 
@@ -168,7 +262,7 @@ public class ConfigQueryService {
 
 ---
 
-### 4. CacheEligibilityPolicy — Entry Acceptance Strategy
+### 5. CacheEligibilityPolicy — Entry Acceptance Strategy
 
 Implement `CacheEligibilityPolicy<T>` to apply business rules before storing entries:
 
@@ -197,7 +291,7 @@ public void put(String key, ConfigDTO dto) {
 
 ---
 
-### 5. AbstractCacheWarmupRunner — Startup Cache Warming
+### 6. AbstractCacheWarmupRunner — Startup Cache Warming
 
 Extend `AbstractCacheWarmupRunner` to pre-populate a cache at application startup:
 

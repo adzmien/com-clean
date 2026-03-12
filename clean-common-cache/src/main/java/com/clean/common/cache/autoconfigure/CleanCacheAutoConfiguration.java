@@ -32,7 +32,10 @@ import org.springframework.data.redis.serializer.RedisSerializationContext.Seria
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @AutoConfiguration(before = CacheAutoConfiguration.class)
 @EnableCaching
@@ -49,16 +52,30 @@ public class CleanCacheAutoConfiguration {
     public CacheManager redisCacheManager(
             RedisConnectionFactory redisConnectionFactory,
             CacheProviderProperties properties) {
-        RedisCacheConfiguration cacheConfiguration = RedisCacheConfiguration.defaultCacheConfig()
+
+        CacheProviderProperties.Redis redisProps = properties.getRedis();
+
+        RedisCacheConfiguration defaultConfig = RedisCacheConfiguration.defaultCacheConfig()
+                .entryTtl(Duration.ofSeconds(redisProps.getDefaultTtlSeconds()))
                 .serializeKeysWith(SerializationPair.fromSerializer(new StringRedisSerializer()))
                 .serializeValuesWith(SerializationPair.fromSerializer(new StringRedisSerializer()))
                 .disableCachingNullValues();
 
+        Map<String, RedisCacheConfiguration> perCacheConfigs = redisProps.getCacheConfigs()
+                .entrySet().stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        e -> defaultConfig.entryTtl(Duration.ofSeconds(e.getValue().getTtlSeconds()))
+                ));
+
         RedisCacheManager.RedisCacheManagerBuilder builder = RedisCacheManager.builder(redisConnectionFactory)
-                .cacheDefaults(cacheConfiguration);
+                .cacheDefaults(defaultConfig)
+                .withInitialCacheConfigurations(perCacheConfigs);
+
         if (!properties.getCacheNames().isEmpty()) {
             builder.initialCacheNames(Set.copyOf(properties.getCacheNames()));
         }
+
         return builder.build();
     }
 
