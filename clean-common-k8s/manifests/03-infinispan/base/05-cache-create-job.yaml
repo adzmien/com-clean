@@ -1,0 +1,96 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: infinispan-cache-create
+  namespace: com-clean-dev
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: infinispan-cache-create
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: cache-create
+          image: curlimages/curl:8.12.1
+          env:
+            - name: INFINISPAN_USER
+              value: infinispan
+            - name: INFINISPAN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: infinispan-secret
+                  key: INFINISPAN_PASS
+            - name: INFINISPAN_HOST
+              value: infinispan
+            - name: INFINISPAN_PORT
+              value: "11222"
+            - name: CACHE_MAX_COUNT
+              value: "10000"
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              set -eu
+
+              BASE_URL="http://${INFINISPAN_HOST}:${INFINISPAN_PORT}"
+              AUTH="${INFINISPAN_USER}:${INFINISPAN_PASS}"
+
+              echo "Waiting for Infinispan..."
+              attempts=0
+              until [ "$attempts" -ge 60 ]; do
+                code="$(curl -s -o /dev/null -w "%{http_code}" --digest -u "$AUTH" "${BASE_URL}/rest/v2/cache-managers/default/health/status" || true)"
+                if [ "$code" = "200" ]; then
+                  break
+                fi
+                attempts=$((attempts + 1))
+                sleep 5
+              done
+
+              if [ "$attempts" -ge 60 ]; then
+                echo "Infinispan did not become ready in time"
+                exit 1
+              fi
+
+              create_cache() {
+                name="$1"
+                payload="/tmp/${name}.json"
+
+                cat > "$payload" <<EOF
+              {
+                "distributed-cache": {
+                  "mode": "SYNC",
+                  "owners": "3",
+                  "statistics": "true",
+                  "memory": {
+                    "when-full": "REMOVE",
+                    "max-count": "${CACHE_MAX_COUNT}"
+                  }
+                }
+              }
+              EOF
+
+                code="$(curl -s -o "/tmp/${name}.out" -w "%{http_code}" \
+                  --digest -u "$AUTH" \
+                  -H "Content-Type: application/json" \
+                  -X POST "${BASE_URL}/rest/v2/caches/${name}" \
+                  --data-binary "@${payload}" || true)"
+
+                if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+                  echo "Cache ${name} created"
+                  return 0
+                fi
+
+                if [ "$code" = "409" ] || [ "$code" = "400" ]; then
+                  echo "Cache ${name} already exists, continuing"
+                  return 0
+                fi
+
+                echo "Failed to create cache ${name}. HTTP ${code}"
+                cat "/tmp/${name}.out"
+                return 1
+              }
+
+              create_cache config-cache
+              create_cache template-cache

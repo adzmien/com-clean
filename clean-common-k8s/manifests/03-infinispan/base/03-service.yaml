@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: infinispan
+  namespace: com-clean-dev
+spec:
+  type: ClusterIP
+  selector:
+    app: infinispan
+  ports:
+    - name: hotrod
+      port: 11222
+      targetPort: 11222
+      protocol: TCP

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: infinispan-headless
+  namespace: com-clean-dev
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: infinispan
+  ports:
+    - name: hotrod
+      port: 11222
+      targetPort: 11222
+      protocol: TCP

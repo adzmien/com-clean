@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: infinispan
+  namespace: com-clean-dev
+spec:
+  serviceName: infinispan-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: infinispan
+  template:
+    metadata:
+      labels:
+        app: infinispan
+    spec:
+      containers:
+        - name: infinispan
+          image: quay.io/infinispan/server:15.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: INFINISPAN_USER
+              value: infinispan
+            - name: INFINISPAN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: infinispan-secret
+                  key: INFINISPAN_PASS
+            - name: USER
+              value: infinispan
+            - name: PASS
+              valueFrom:
+                secretKeyRef:
+                  name: infinispan-secret
+                  key: INFINISPAN_PASS
+            - name: JGROUPS_DISCOVERY_PROTOCOL
+              value: dns.DNS_PING
+            - name: JGROUPS_DISCOVERY_PROPERTIES
+              value: dns_query=infinispan-headless.com-clean-dev.svc.cluster.local
+          ports:
+            - name: hotrod
+              containerPort: 11222
+          readinessProbe:
+            tcpSocket:
+              port: 11222
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 11222
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
