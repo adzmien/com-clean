@@ -1,0 +1,311 @@
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'org.flywaydb:flyway-mysql:10.4.1'
+        classpath 'org.mariadb.jdbc:mariadb-java-client:3.3.2'
+    }
+}
+
+plugins {
+    id 'java'
+    id 'org.flywaydb.flyway' version '10.4.1'
+}
+
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.flywaydb:flyway-core:10.4.1'
+    implementation 'org.flywaydb:flyway-mysql:10.4.1'
+    implementation 'org.mariadb.jdbc:mariadb-java-client:3.3.2'
+}
+
+def allowedEnvs = ['dev', 'sit', 'uat', 'prod', 'dr']
+def targetEnv = (project.findProperty('env') ?: 'dev').toString().toLowerCase()
+if (!allowedEnvs.contains(targetEnv)) {
+    throw new GradleException("Invalid env '${targetEnv}'. Supported values: ${allowedEnvs.join(', ')}")
+}
+
+def envConfigFile = file("gradle/env/${targetEnv}.properties")
+if (!envConfigFile.exists()) {
+    throw new GradleException("Missing environment config file: ${envConfigFile.path}")
+}
+
+def envProperties = new Properties()
+envConfigFile.withInputStream { stream ->
+    envProperties.load(stream)
+}
+
+def resolveConfig = { String key, String defaultValue = null ->
+    def projectValue = project.findProperty(key)?.toString()?.trim()
+    if (projectValue) {
+        return projectValue
+    }
+
+    def envValue = envProperties.getProperty(key)?.toString()?.trim()
+    if (envValue) {
+        return envValue
+    }
+
+    return defaultValue
+}
+
+def flywayUrl = resolveConfig('flyway.url', 'jdbc:mariadb://localhost:3306/clean_dev')
+def flywayUser = resolveConfig('flyway.user', 'user')
+def flywayPassword = project.findProperty('flyway.password')?.toString()?.trim()
+if (!flywayPassword) {
+    flywayPassword = System.getenv('FLYWAY_PASSWORD')?.trim()
+}
+def sharedSchema = (project.findProperty('db.schema') ?: 'clean_dev').toString().trim()
+def cleanDisabledSetting = (project.findProperty('flyway.cleanDisabled') ?: true).toString().toBoolean()
+def restrictedDummyEnvs = ['prod', 'dr'] as Set
+
+logger.lifecycle("Flyway target env='${targetEnv}', url='${flywayUrl}', schema='${sharedSchema}'")
+if (!flywayPassword) {
+    logger.lifecycle("No Flyway password provided. Use -Pflyway.password or FLYWAY_PASSWORD for authenticated DB connections.")
+}
+
+flyway {
+    url = flywayUrl
+    user = flywayUser
+    password = flywayPassword ?: ''
+    schemas = [sharedSchema]
+    locations = [
+        'classpath:db/migration/sql/ddl-dml'
+        // Note: 'dummy' location removed from base config
+        // Dummy migrations only accessible via flywayMigrateDummy/flywayInfoDummy tasks
+        // This ensures production commands (flywayInfo, flywayMigrate) never touch dummy data
+    ]
+    baselineOnMigrate = true
+    validateOnMigrate = true
+    cleanDisabled = cleanDisabledSetting
+}
+
+def blockDummyForRestrictedEnvs = { String taskName ->
+    if (restrictedDummyEnvs.contains(targetEnv)) {
+        throw new GradleException("${taskName} is blocked for env='${targetEnv}'. Dummy migrations are not allowed in prod/dr.")
+    }
+}
+
+// Custom rollback task with date-based validation and automation
+task flywayRollback {
+    group = 'flyway'
+    description = 'Executes rollback scripts for migrations created on a specific date'
+
+    doLast {
+        // Prompt for date input
+        def console = System.console()
+        if (console == null) {
+            throw new GradleException("Cannot get console instance. Please run from a terminal.")
+        }
+
+        def rollbackDate = console.readLine("Enter the migration date to rollback (format: YYMMDD, e.g., 251225): ")
+        if (!rollbackDate) {
+            throw new GradleException("Date is required for rollback operation.")
+        }
+
+        // Validate date format
+        if (!rollbackDate.matches(/^\d{6}$/)) {
+            throw new GradleException("Invalid date format. Please use YYMMDD format (e.g., 251225).")
+        }
+
+        // Define rollback directory path
+        def rollbackDir = file("src/main/resources/db/migration/sql/rollback/${rollbackDate}")
+
+        // Auto-create rollback date folder if it doesn't exist
+        if (!rollbackDir.exists()) {
+            println "Creating rollback directory: ${rollbackDir.path}"
+            rollbackDir.mkdirs()
+            println "Rollback directory created. Please add rollback scripts and run again."
+            return
+        }
+
+        // Validate rollback scripts exist
+        def rollbackScripts = rollbackDir.listFiles({ file ->
+            file.name.startsWith("V${rollbackDate}") && file.name.endsWith('.sql')
+        } as FileFilter)
+
+        if (!rollbackScripts || rollbackScripts.length == 0) {
+            throw new GradleException("No rollback scripts found in ${rollbackDir.path} for date ${rollbackDate}")
+        }
+
+        // Sort scripts in reverse order for proper rollback sequence
+        rollbackScripts.sort { a, b -> b.name.compareTo(a.name) }
+
+        // Confirmation prompt
+        def scriptList = rollbackScripts.collect { it.name }.join(', ')
+        def confirmation = console.readLine("This will execute rollback scripts: ${scriptList}\nAre you sure? (yes/no): ")
+        if (confirmation?.toLowerCase() != 'yes') {
+            println "Rollback cancelled by user."
+            return
+        }
+
+        // Create temporary flyway configuration for rollback
+        def tempFlyway = flyway.clone()
+        tempFlyway.locations = ["filesystem:${rollbackDir.absolutePath}"]
+
+        // Execute rollback scripts
+        try {
+            println "Executing rollback for date: ${rollbackDate}"
+            exec {
+                commandLine 'java', '-cp', configurations.runtimeClasspath.asPath,
+                           'org.flywaydb.commandline.Main',
+                           "-url=${tempFlyway.url}",
+                           "-user=${tempFlyway.user}",
+                           "-password=${tempFlyway.password}",
+                           "-schemas=${tempFlyway.schemas.join(',')}",
+                           "-locations=filesystem:${rollbackDir.absolutePath}",
+                           'migrate'
+            }
+            println "Rollback completed successfully for date: ${rollbackDate}"
+        } catch (Exception e) {
+            throw new GradleException("Rollback failed: ${e.message}")
+        }
+    }
+}
+
+// Custom task to deploy dummy/test data migrations only
+task flywayMigrateDummy {
+    group = 'flyway'
+    description = 'Executes dummy migrations only (test/development sample data) - Uses separate history table'
+
+    doLast {
+        blockDummyForRestrictedEnvs('flywayMigrateDummy')
+        println "Deploying dummy/test data migrations..."
+        println "NOTE: Using separate history table 'flyway_schema_history_dummy' for tracking"
+
+        def originalLocations = flyway.locations
+        def originalTable = flyway.table
+
+        // Configure separate history table for dummy migrations
+        flyway.locations = ['classpath:db/migration/sql/dummy']
+        flyway.table = 'flyway_schema_history_dummy'
+
+        try {
+            tasks.flywayMigrate.actions.each { it.execute(tasks.flywayMigrate) }
+            println "Dummy data migrations completed successfully"
+            println "Migration history recorded in: flyway_schema_history_dummy"
+        } finally {
+            flyway.locations = originalLocations
+            flyway.table = originalTable
+        }
+    }
+}
+
+// Custom task to view dummy migration status
+task flywayInfoDummy {
+    group = 'flyway'
+    description = 'Shows status of dummy migrations (reads from flyway_schema_history_dummy table)'
+
+    doLast {
+        blockDummyForRestrictedEnvs('flywayInfoDummy')
+        println "Checking dummy migration status..."
+        println "Reading from table: flyway_schema_history_dummy"
+
+        def originalTable = flyway.table
+        def originalLocations = flyway.locations
+
+        try {
+            flyway.table = 'flyway_schema_history_dummy'
+            flyway.locations = ['classpath:db/migration/sql/dummy']
+            tasks.flywayInfo.actions.each { it.execute(tasks.flywayInfo) }
+        } finally {
+            flyway.table = originalTable
+            flyway.locations = originalLocations
+        }
+    }
+}
+
+// Custom task to validate dummy migrations
+task flywayValidateDummy {
+    group = 'flyway'
+    description = 'Validates dummy migrations (checks flyway_schema_history_dummy table)'
+
+    doLast {
+        blockDummyForRestrictedEnvs('flywayValidateDummy')
+        println "Validating dummy migrations..."
+        println "Reading from table: flyway_schema_history_dummy"
+
+        def originalTable = flyway.table
+        def originalLocations = flyway.locations
+
+        try {
+            flyway.table = 'flyway_schema_history_dummy'
+            flyway.locations = ['classpath:db/migration/sql/dummy']
+            tasks.flywayValidate.actions.each { it.execute(tasks.flywayValidate) }
+        } finally {
+            flyway.table = originalTable
+            flyway.locations = originalLocations
+        }
+    }
+}
+
+// Custom task to clean dummy migration history (does NOT clean the main history table)
+task flywayCleanDummy {
+    group = 'flyway'
+    description = 'Removes dummy history table (flyway_schema_history_dummy only)'
+
+    doLast {
+        blockDummyForRestrictedEnvs('flywayCleanDummy')
+        def console = System.console()
+        if (console == null) {
+            throw new GradleException("Cannot get console instance. Please run from a terminal.")
+        }
+
+        def confirmation = console.readLine("This will DROP the flyway_schema_history_dummy table. Continue? (yes/no): ")
+        if (confirmation?.toLowerCase() != 'yes') {
+            println "Operation cancelled."
+            return
+        }
+
+        println "Cleaning dummy migration history..."
+
+        // Use direct SQL to drop just the history table
+        def sql = new groovy.sql.Sql(
+            java.sql.DriverManager.getConnection(
+                flyway.url,
+                flyway.user,
+                flyway.password
+            )
+        )
+
+        try {
+            sql.execute("DROP TABLE IF EXISTS `${flyway.schemas[0]}`.`flyway_schema_history_dummy`")
+            println "Dummy history table dropped successfully"
+        } finally {
+            sql.close()
+        }
+    }
+}
+
+// Custom task to deploy DDL and DML migrations (excluding dummy data)
+task flywayMigrateDdlDml {
+    group = 'flyway'
+    description = 'Executes DDL and DML migrations only (excludes dummy data)'
+
+    doLast {
+        println "Deploying DDL and DML migrations..."
+        def originalLocations = flyway.locations
+        flyway.locations = [
+            'classpath:db/migration/sql/ddl-dml'
+        ]
+
+        try {
+            tasks.flywayMigrate.actions.each { it.execute(tasks.flywayMigrate) }
+            println "DDL and DML migrations completed successfully"
+        } finally {
+            flyway.locations = originalLocations
+        }
+    }
+}
